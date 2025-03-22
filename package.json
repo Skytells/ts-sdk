@@ -16,7 +16,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/skytells/js-sdk.git"
+    "url": "git+https://github.com/skytells/ts-sdk.git"
   },
   "keywords": [
     "ai",
@@ -31,9 +31,9 @@
   "author": "Skytells, Inc.",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/skytells/js-sdk/issues"
+    "url": "https://github.com/skytells/ts-sdk/issues"
   },
-  "homepage": "https://github.com/skytells/js-sdk#readme",
+  "homepage": "https://github.com/skytells/ts-sdk#readme",
   "devDependencies": {
     "@types/jest": "^29.5.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
