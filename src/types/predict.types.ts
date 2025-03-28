@@ -35,10 +35,20 @@ export enum PredictionStatus {
   STARTING = 'starting',
   STARTED = 'started',
 }
+export enum PredictionType {
+  INFERENCE = 'inference',
+  TRAINING = 'training',
+}
 
+export enum PredictionSource {
+  API = 'api',
+  CLI = 'cli',
+  WEB = 'web',
+}
 export interface PredictionResponse {
   status: PredictionStatus;
   id: string;
+  type: PredictionType;
   response: string;
   stream: boolean;
   input: Record<string, any>;
@@ -48,6 +58,7 @@ export interface PredictionResponse {
   completed_at: string;
   updated_at: string;
   privacy: string;
+  source?: PredictionSource;
   model?: {
     name: string;
     type: string;
