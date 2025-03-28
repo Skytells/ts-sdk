@@ -14,6 +14,19 @@ pnpm add skytells
 
 ## Quick Start
 
+
+### Obtaining an API Key
+
+To obtain an API key, follow these steps:
+
+1. Log in to your Skytells account at [https://www.skytells.ai/auth/signin](https://www.skytells.ai/auth/signin)
+2. Navigate to your dashboard and go to the API Keys section at [https://www.skytells.ai/dashboard/api-keys](https://www.skytells.ai/dashboard/api-keys)
+3. Click on "Generate New API Key"
+4. Give your API key a descriptive name (e.g., "Production API Key", "Development API Key")
+5. Copy the generated API key immediately - you won't be able to see it again!
+
+## Making Predictions
+
 ```typescript
 import { createClient } from 'skytells';
 
