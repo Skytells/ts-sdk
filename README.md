@@ -237,6 +237,14 @@ npm test
 npm run lint
 ```
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for the latest changes.
+
+## SDK Docs
+
+See [SDK Docs](https://docs.skytells.ai/sdks/ts/) for the latest documentation.
+
 ## License
 
 MIT 
