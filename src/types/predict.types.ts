@@ -1,31 +1,153 @@
+/**
+ * Payload for creating a prediction via the Skytells API.
+ *
+ * Used by {@link SkytellsClient.predict} and {@link PredictionsAPI.create}.
+ *
+ * @example
+ * ```ts
+ * const response = await client.predict({
+ *   model: "flux-pro",
+ *   input: { prompt: "A sunset over mountains" },
+ *   await: true,
+ * });
+ * ```
+ */
 export interface PredictionRequest {
-  /**
-   * Model to use for the prediction
-   */
+  /** Model slug to run (e.g. `"flux-pro"`, `"truefusion"`, `"beatfusion"`). */
   model: string;
-  /**
-   * Input to the prediction
-   */
+  /** Key-value input parameters for the model (e.g. `{ prompt: "..." }`). */
   input: Record<string, any>;
   /**
-   * Webhook to receive prediction events
+   * Optional webhook configuration to receive prediction lifecycle events.
+   * The API will POST to the given URL when the specified events occur.
    */
   webhook?: {
+    /** The URL to receive webhook events. */
     url: string;
+    /** Events to subscribe to (e.g. `["completed", "failed"]`). */
     events: string[];
   };
   /**
-   * Whether to wait for the prediction to complete
+   * If `true`, the API blocks until the prediction completes and returns the final result.
+   * If `false` (default), returns immediately with status `"pending"`.
    * @default false
    */
   await?: boolean;
   /**
-   * Whether to stream the prediction events
+   * If `true`, enables streaming for the prediction.
    * @default false
    */
   stream?: boolean;
 }
 
+/**
+ * Options for {@link SkytellsClient.run}.
+ *
+ * Same as {@link PredictionRequest} but without `model` (passed separately) and `await` (handled internally).
+ *
+ * @example
+ * ```ts
+ * const prediction = await client.run("flux-pro", {
+ *   input: { prompt: "A cat wearing sunglasses" },
+ *   webhook: { url: "https://example.com/hook", events: ["completed"] },
+ * });
+ * ```
+ */
+export interface RunOptions {
+  /** Key-value input parameters for the model. */
+  input: Record<string, any>;
+  /**
+   * Optional webhook configuration to receive prediction lifecycle events.
+   */
+  webhook?: {
+    /** The URL to receive webhook events. */
+    url: string;
+    /** Events to subscribe to. */
+    events: string[];
+  };
+  /**
+   * If `true`, enables streaming for the prediction.
+   * @default false
+   */
+  stream?: boolean;
+}
+
+/**
+ * Options for listing predictions with filters and pagination.
+ *
+ * @example
+ * ```ts
+ * const { data } = await client.predictions.list({
+ *   model: "flux-pro",
+ *   since: "2026-01-01",
+ *   until: "2026-03-15",
+ *   page: 2,
+ * });
+ * ```
+ */
+export interface PredictionsListOptions {
+  /** Page number for pagination (default: 1). */
+  page?: number;
+  /** Include predictions created on or after this date (`YYYY-MM-DD`). */
+  since?: string;
+  /** Include predictions created on or before this date (`YYYY-MM-DD`). */
+  until?: string;
+  /** Filter by model slug (e.g. `"flux-pro"`). */
+  model?: string;
+}
+
+/**
+ * Progress callback invoked on each poll during {@link SkytellsClient.run} or {@link SkytellsClient.wait}.
+ *
+ * @param prediction - The latest prediction response from the API, including current status and metrics.
+ *
+ * @example
+ * ```ts
+ * const prediction = await client.run("flux-pro", { input: { prompt: "..." } }, (p) => {
+ *   console.log(p.status, p.metrics?.progress);
+ * });
+ * ```
+ */
+export type OnProgressCallback = (prediction: PredictionResponse) => void;
+
+/**
+ * Options for {@link SkytellsClient.wait} to control polling behavior.
+ *
+ * @example
+ * ```ts
+ * const result = await client.wait(prediction, {
+ *   interval: 2000,   // poll every 2 seconds
+ *   maxWait: 120000,  // timeout after 2 minutes
+ * });
+ * ```
+ */
+export interface WaitOptions {
+  /** Polling interval in milliseconds (default: 5000). */
+  interval?: number;
+  /** Maximum time to wait in milliseconds. Throws `WAIT_TIMEOUT` error if exceeded. */
+  maxWait?: number;
+}
+
+/**
+ * An item in the local prediction queue, created by {@link SkytellsClient.queue}
+ * and dispatched by {@link SkytellsClient.dispatch}.
+ */
+export interface QueueItem {
+  /** The prediction request payload to dispatch. */
+  request: PredictionRequest;
+}
+
+/**
+ * Lifecycle status of a prediction.
+ *
+ * - `pending` — Queued, waiting to start.
+ * - `starting` — Allocating resources.
+ * - `started` — Resources allocated, about to process.
+ * - `processing` — Actively running.
+ * - `succeeded` — Completed successfully (output available).
+ * - `failed` — Completed with an error.
+ * - `cancelled` — Cancelled by the user.
+ */
 export enum PredictionStatus {
   PENDING = 'pending',
   PROCESSING = 'processing',
@@ -35,59 +157,149 @@ export enum PredictionStatus {
   STARTING = 'starting',
   STARTED = 'started',
 }
+
+/**
+ * The type of prediction workload.
+ */
 export enum PredictionType {
+  /** Standard inference (generating output from input). */
   INFERENCE = 'inference',
+  /** Model training/fine-tuning. */
   TRAINING = 'training',
 }
 
+/**
+ * The source that created the prediction.
+ */
 export enum PredictionSource {
+  /** Created via the REST API or SDK. */
   API = 'api',
+  /** Created via the Skytells CLI. */
   CLI = 'cli',
+  /** Created via the Skytells web interface. */
   WEB = 'web',
 }
+
+/**
+ * The full prediction response returned by the Skytells API.
+ *
+ * Contains the prediction status, input/output, timing, metrics, billing,
+ * storage information, and API URLs for lifecycle management.
+ *
+ * @example
+ * ```ts
+ * const response = await client.predict({
+ *   model: "flux-pro",
+ *   input: { prompt: "A sunset" },
+ *   await: true,
+ * });
+ *
+ * console.log(response.id);            // "pred_abc123"
+ * console.log(response.status);        // "succeeded"
+ * console.log(response.output);        // "https://..." or ["https://...", ...]
+ * console.log(response.metrics);       // { predict_time: 2.3, total_time: 5.1, ... }
+ * console.log(response.metadata);      // { billing: { credits_used: 1 }, ... }
+ * ```
+ */
 export interface PredictionResponse {
+  /** Current lifecycle status of the prediction. */
   status: PredictionStatus;
+  /** Unique prediction identifier (e.g. `"pred_abc123"`). */
   id: string;
+  /** Type of prediction workload (`"inference"` or `"training"`). */
   type: PredictionType;
-  response: string;
+  /** Whether streaming was enabled for this prediction. */
   stream: boolean;
+  /** The input parameters that were sent to the model. */
   input: Record<string, any>;
-  output?: string[];
+  /** Human-readable response message (e.g. error details on failure). */
+  response?: string;
+  /**
+   * The prediction output. Can be:
+   * - A single `string` (e.g. an image URL or text completion).
+   * - A `string[]` array (e.g. multiple image URLs).
+   * - `undefined` if the prediction hasn't completed yet.
+   */
+  output?: string | string[];
+  /** ISO 8601 timestamp when the prediction was created. */
   created_at: string;
+  /** ISO 8601 timestamp when processing started. */
   started_at: string;
+  /** ISO 8601 timestamp when the prediction completed (succeeded/failed/cancelled). */
   completed_at: string;
+  /** ISO 8601 timestamp of the last status update. */
   updated_at: string;
+  /** Privacy level of the prediction. */
   privacy: string;
+  /** The source that created this prediction (API, CLI, or web). */
   source?: PredictionSource;
+  /** The model used for this prediction. */
   model?: {
+    /** Model display name. */
     name: string;
+    /** Model type (e.g. `"image"`, `"video"`). */
     type: string;
   };
+  /** Webhook configuration, if set. */
   webhook?: {
-    url: string;
+    /** The webhook URL, or `null` if not configured. */
+    url: string | null;
+    /** Events the webhook is subscribed to. */
     events: string[];
   };
+  /**
+   * Performance and usage metrics for the prediction.
+   * Available after the prediction completes.
+   */
   metrics?: {
-    image_count: number;
-    predict_time: number;
+    /** Number of images generated. */
+    image_count?: number;
+    /** Time spent on model inference (seconds). */
+    predict_time?: number;
+    /** Total wall-clock time including queue and overhead (seconds). */
+    total_time?: number;
+    /** Number of output assets (files) generated. */
+    asset_count?: number;
+    /** Progress percentage (0–100), available during processing. */
+    progress?: number;
   };
+  /**
+   * Metadata including billing and storage information.
+   */
   metadata?: {
+    /** Billing details for this prediction. */
     billing?: {
+      /** Number of credits consumed. */
       credits_used: number;
     };
+    /** Storage details for generated output files. */
     storage?: {
+      /** Array of generated files with download URLs. */
       files: {
+        /** File name (e.g. `"output.png"`). */
         name: string;
+        /** MIME type (e.g. `"image/png"`). */
         type: string;
+        /** File size in bytes. */
         size: number;
+        /** Download URL for the file. */
         url: string;
       }[];
     };
+    /** Whether output data is still available for download. */
+    data_available?: boolean;
   };
+  /**
+   * API URLs for managing this prediction's lifecycle.
+   */
   urls?: {
+    /** URL to fetch the prediction status. */
     get?: string;
+    /** URL to cancel the prediction. */
     cancel?: string;
+    /** URL for the streaming endpoint. */
     stream?: string;
+    /** URL to delete the prediction. */
     delete?: string;
   };
 } 

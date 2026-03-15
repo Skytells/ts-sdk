@@ -2,7 +2,7 @@
 // Run with: node test-script.js YOUR_API_KEY
 
 // Import the SDK (assumes you've built it with 'npm run build')
-import { createClient } from './dist/index.js';
+import { Skytells } from './dist/index.js';
 import { fileURLToPath } from 'url';
 import process from 'process';
 
@@ -14,13 +14,13 @@ if (!apiKey) {
 }
 
 // Create a client instance
-const client = createClient(apiKey);
+const client = Skytells(apiKey);
 
 async function runTests() {
   try {
     // Test 1: List models
-    console.log('Testing listModels()...');
-    const models = await client.listModels();
+    console.log('Testing models.list()...');
+    const models = await client.models.list();
     console.log(`✅ Success! Found ${models.length} models.`);
     console.log('First model:', models[0]?.name || 'No models found');
     console.log('-'.repeat(40));

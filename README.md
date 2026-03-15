@@ -1,6 +1,8 @@
 # Skytells JavaScript/TypeScript SDK
 
-The official JavaScript/TypeScript SDK for interacting with the [Skytells](https://skytells.ai) API. Edge-compatible with Cloudflare Pages, Vercel Edge Functions, and more.
+The official JavaScript/TypeScript SDK for interacting with the [Skytells](https://skytells.ai) API. Edge-compatible with Cloudflare Workers, Vercel Edge Functions, Netlify Edge Functions, and more.
+
+Generate text, photos, videos, avatars, audio, music, and more using Skytells' own models and partner models — all through a single API. [Explore models →](https://skytells.ai/explore/models)
 
 ## Installation
 
@@ -14,190 +16,291 @@ pnpm add skytells
 
 ## Quick Start
 
+```typescript
+import Skytells from 'skytells';
+
+const skytells = Skytells('your-api-key');
+
+// Run a model and get the result
+const prediction = await skytells.run('truefusion', {
+  input: { prompt: 'A cat wearing sunglasses' },
+});
+
+console.log(prediction.outputs()); // "https://delivery.skytells.cloud/..."
+```
 
 ### Obtaining an API Key
 
-To obtain an API key, follow these steps:
+1. Log in at [Skytells Portal](https://www.skytells.ai/auth/signin) or [Create an Account](https://www.skytells.ai/auth/signup)
+2. Go to [Dashboard → API Keys](https://www.skytells.ai/dashboard/api-keys)
+3. Click **Generate New API Key** and copy it immediately
 
-1. Log in to your Skytells account at [https://www.skytells.ai/auth/signin](https://www.skytells.ai/auth/signin)
-2. Navigate to your dashboard and go to the API Keys section at [https://www.skytells.ai/dashboard/api-keys](https://www.skytells.ai/dashboard/api-keys)
-3. Click on "Generate New API Key"
-4. Give your API key a descriptive name (e.g., "Production API Key", "Development API Key")
-5. Copy the generated API key immediately - you won't be able to see it again!
+## Usage
 
-## Making Predictions
+### Running a Prediction
 
-```typescript
-import { createClient } from 'skytells';
-
-// Initialize the client with your API key
-const skytells = createClient('your-api-key-here');
-
-// Make a prediction
-async function makePrediction() {
-  try {
-    const prediction = await skytells.predict({
-      model: 'model-name',
-      input: {
-        prompt: 'Your prompt here'
-      }
-    });
-    
-    console.log('Prediction ID:', prediction.id);
-    console.log('Status:', prediction.status);
-    console.log('Output:', prediction.output);
-  } catch (error) {
-    console.error('Error making prediction:', error);
-  }
-}
-
-// List available models
-async function listModels() {
-  try {
-    const models = await skytells.listModels();
-    console.log('Available models:', models);
-  } catch (error) {
-    console.error('Error listing models:', error);
-  }
-}
-
-// Get a prediction by ID
-async function getPrediction(id) {
-  try {
-    const prediction = await skytells.getPrediction(id);
-    console.log('Prediction:', prediction);
-  } catch (error) {
-    console.error('Error getting prediction:', error);
-  }
-}
-```
-
-## Edge Compatibility
-
-This SDK is fully compatible with edge environments including:
-
-- Cloudflare Workers and Pages
-- Vercel Edge Functions
-- Netlify Edge Functions
-- Deno Deploy
-- Any environment with Fetch API support
-
-To use a custom API endpoint or proxy:
+`skytells.run()` sends a prediction, waits for completion, and returns a `Prediction` object:
 
 ```typescript
-import { createClient } from 'skytells';
+import Skytells from 'skytells';
 
-// Use a custom API endpoint or proxy
-const client = createClient('your-api-key', {
-  baseUrl: 'https://your-proxy.example.com/v1'
+const skytells = Skytells('your-api-key');
+
+const prediction = await skytells.run('truefusion', {
+  input: { prompt: 'A sunset over mountains' },
 });
+
+// Access output
+console.log(prediction.id);        // "pred_abc123"
+console.log(prediction.status);    // "succeeded"
+console.log(prediction.output);    // Raw: ["https://..."] or "https://..."
+console.log(prediction.outputs()); // Normalized: "https://..." (unwraps single-element arrays)
+
+// Full raw response
+const raw = prediction.raw();
+console.log(raw.metrics);          // { predict_time: 3.86, total_time: 3.86, ... }
+console.log(raw.metadata);         // { billing: { credits_used: 0 }, storage: { ... } }
 ```
 
-## API Reference
+### Progress Tracking
 
-### Creating a Client
+Pass an `onProgress` callback to track prediction status during polling:
 
 ```typescript
-import { createClient } from 'skytells';
-
-// With API key (authenticated)
-const client = createClient('your-api-key');
-
-// Without API key (unauthenticated, limited functionality)
-const unauthenticatedClient = createClient();
-
-// With options
-const clientWithOptions = createClient('your-api-key', {
-  baseUrl: 'https://api.skytells.ai/v1', // Custom API URL
-  timeout: 30000 // Custom timeout in ms
+const prediction = await skytells.run('beatfusion-2.0', {
+  input: { prompt: 'rap, romantic', lyrics: 'Let me introduce the voice you hear, Beatfusion by Skytells making it clear..' },
+}, (p) => {
+  console.log(`Status: ${p.status}, Progress: ${p.metrics?.progress ?? 'n/a'}`);
 });
+// [... song url ]
 ```
 
-### Predictions
+### Background Predictions
 
-#### Make a Prediction
+Create a prediction without waiting for it to finish:
 
 ```typescript
-const prediction = await client.predict({
-  model: 'model-name',
-  input: {
-    // Model-specific inputs
-    prompt: 'Your prompt here',
-    // Other parameters...
-  }
+// Create in background (returns immediately)
+const response = await skytells.predictions.create({
+  model: 'truefusion',
+  input: { prompt: 'A cat' },
 });
+console.log(response.id, response.status); // "pred_..." "pending"
+
+// Poll until complete
+const result = await skytells.wait(response);
+console.log(result.output);
+
+// Or with a timeout and progress
+const result = await skytells.wait(response, {
+  interval: 2000,   // poll every 2s
+  maxWait: 120000,  // timeout after 2 min
+}, (p) => console.log(p.status));
 ```
 
-#### Get a Prediction by ID
+### Queue & Dispatch
+
+Batch multiple predictions and dispatch them concurrently:
 
 ```typescript
-const prediction = await client.getPrediction('prediction-id');
+skytells.queue({ model: 'truefusion-pro', input: { prompt: 'Cat' } });
+skytells.queue({ model: 'truefusion-x', input: { prompt: 'Dog' } });
+skytells.queue({ model: 'FLUX-2.0', input: { prompt: 'Bird' } });
+skytells.queue({ model: 'sora-2', input: { prompt: 'A stunning video....' } });
+skytells.queue({ model: 'beatfusion-2.0', input: { lyrics:' Wherever you are I go In every beat every sound Your love is all around....', prompt: 'Romantic, Love' } });
+
+
+const results = await skytells.dispatch();
+// results: PredictionResponse[] — one per queued item
+
+// Wait for all to complete
+const completed = await Promise.all(results.map(r => skytells.wait(r)));
 ```
 
-#### Stream a Prediction
+### Prediction Lifecycle
 
 ```typescript
-const prediction = await client.streamPrediction('prediction-id');
-```
+// Cancel a running prediction
+await prediction.cancel();
+// or by ID
+await skytells.cancelPrediction('pred_abc123');
 
-#### Cancel a Prediction
+// Delete a prediction and its assets
+await prediction.delete();
+// or by ID
+await skytells.deletePrediction('pred_abc123');
 
-```typescript
-const prediction = await client.cancelPrediction('prediction-id');
-```
-
-#### Delete a Prediction
-
-```typescript
-const prediction = await client.deletePrediction('prediction-id');
+// Stream endpoint
+const stream = await skytells.streamPrediction('pred_abc123');
+console.log(stream.urls?.stream);
 ```
 
 ### Models
 
-#### List All Models
-
 ```typescript
-const models = await client.listModels();
+// List all models
+const models = await skytells.models.list();
+for (const m of models) {
+  console.log(m.name, m.type, m.pricing?.amount);
+}
+
+// Get a specific model
+const model = await skytells.models.get('truefusion');
+
+// Include schemas
+const detailed = await skytells.models.get('truefusion', {
+  fields: ['input_schema', 'output_schema'],
+});
 ```
 
-## TypeScript Support
+### Predictions API
 
-This SDK is built with TypeScript and provides full type definitions for all methods and responses.
+```typescript
+// List predictions with filters
+const { data, pagination } = await skytells.predictions.list({
+  model: 'truefusion',
+  since: '2026-01-01',
+  until: '2026-03-15',
+  page: 2,
+});
+
+// Get a prediction by ID
+const prediction = await skytells.predictions.get('pred_abc123');
+```
+
+## Client Options
+
+```typescript
+import Skytells from 'skytells';
+
+const skytells = Skytells('your-api-key', {
+  baseUrl: 'https://your-proxy.example.com/v1', // Custom API URL
+  timeout: 30000,                                // Request timeout in ms (default: 60000)
+  headers: { 'X-Custom-Header': 'value' },       // Extra headers on every request
+  retry: {
+    retries: 3,                                  // Retry failed requests (default: 0)
+    retryDelay: 1000,                            // Delay between retries in ms (default: 1000)
+    retryOn: [429, 500, 502, 503, 504],          // Status codes to retry (default)
+  },
+  fetch: (url, opts) =>                          // Custom fetch (e.g. Next.js cache workaround)
+    fetch(url, { ...opts, cache: 'no-store' }),
+});
+```
+
+## The Prediction Object
+
+When you call `skytells.run()`, you get a `Prediction` object:
+
+| Property / Method | Returns | Description |
+|---|---|---|
+| `.id` | `string` | Unique prediction ID |
+| `.status` | `PredictionStatus` | `pending`, `starting`, `started`, `processing`, `succeeded`, `failed`, `cancelled` |
+| `.output` | `string \| string[] \| undefined` | Raw output from the API |
+| `.response` | `PredictionResponse` | Full response object |
+| `.outputs()` | `string \| string[] \| undefined` | Normalized output — unwraps single-element arrays |
+| `.raw()` | `PredictionResponse` | Full raw response |
+| `.cancel()` | `Promise<PredictionResponse>` | Cancel the prediction |
+| `.delete()` | `Promise<PredictionResponse>` | Delete the prediction and its assets |
+
+### `outputs()` Behavior
+
+| API returns | `outputs()` returns |
+|---|---|
+| `undefined` | `undefined` |
+| `"https://..."` | `"https://..."` |
+| `["https://..."]` | `"https://..."` (unwrapped) |
+| `["a", "b"]` | `["a", "b"]` (kept as array) |
+
+## Edge Compatibility
+
+This SDK works in any environment with Fetch API support:
+
+- **Cloudflare Workers & Pages**
+- **Vercel Edge Functions**
+- **Netlify Edge Functions**
+- **Deno Deploy**
+- **Node.js 18+**
+- **Browsers**
 
 ## Error Handling
 
-All API methods return promises that may reject with a `SkytellsError`. The SDK parses API error responses into this structured format:
+All methods throw `SkytellsError` on failure:
 
 ```typescript
-import { createClient, SkytellsError } from 'skytells';
+import Skytells, { SkytellsError } from 'skytells';
 
 try {
-  const prediction = await client.predict({
-    model: 'model-name',
-    input: { prompt: 'Your prompt' }
+  const prediction = await skytells.run('truefusion', {
+    input: { prompt: 'A cat' },
   });
 } catch (error) {
   if (error instanceof SkytellsError) {
-    console.error('Error message:', error.message);
-    console.error('Error ID:', error.errorId);      // Example: "VALIDATION_ERROR"
-    console.error('Error details:', error.details);  // Detailed error information
-    console.error('HTTP status:', error.httpStatus); // HTTP status code (e.g., 422)
-  } else {
-    console.error('Unknown error:', error);
+    console.error(error.message);    // Human-readable message
+    console.error(error.errorId);    // e.g. "VALIDATION_ERROR"
+    console.error(error.details);    // Detailed info
+    console.error(error.httpStatus); // e.g. 422
   }
 }
 ```
 
-### Common Error IDs
+### Error IDs
 
-- `VALIDATION_ERROR` - Request parameters failed validation
-- `AUTHENTICATION_ERROR` - Invalid or missing API key
-- `RATE_LIMIT_EXCEEDED` - Too many requests
-- `RESOURCE_NOT_FOUND` - The requested resource doesn't exist
-- `NETWORK_ERROR` - Connection issue with the API
-- `REQUEST_TIMEOUT` - Request took too long to complete
-- `SERVER_ERROR` - The server responded with a non-JSON response (e.g., HTML error page)
-- `INVALID_JSON` - The server returned invalid JSON content
+| Error ID | Description |
+|---|---|
+| `UNAUTHORIZED` | Invalid or missing API key |
+| `VALIDATION_ERROR` | Request parameters failed validation |
+| `MODEL_NOT_FOUND` | Model slug not found |
+| `INSUFFICIENT_CREDITS` | Not enough credits |
+| `RATE_LIMIT_EXCEEDED` | Too many requests |
+| `PREDICTION_FAILED` | Prediction completed with failure |
+| `WAIT_TIMEOUT` | Polling exceeded `maxWait` |
+| `REQUEST_TIMEOUT` | HTTP request timed out |
+| `NETWORK_ERROR` | Connection issue |
+| `SERVER_ERROR` | Non-JSON response from server |
+| `INVALID_JSON` | Server returned invalid JSON |
+
+## TypeScript
+
+Full type definitions are included. Key types:
+
+```typescript
+import type {
+  PredictionRequest,
+  PredictionResponse,
+  PredictionStatus,
+  RunOptions,
+  WaitOptions,
+  Model,
+  ClientOptions,
+  PaginatedResponse,
+} from 'skytells';
+```
+
+## Migration from v1.0.2
+
+```diff
+- import { createClient } from 'skytells';
+- const client = createClient('key');
++ import Skytells from 'skytells';
++ const skytells = Skytells('key');
+
+- const models = await client.listModels();
++ const models = await skytells.models.list();
+
+- const model = await client.getModel('truefusion');
++ const model = await skytells.models.get('truefusion');
+
+- const pred = await client.getPrediction(id);
++ const pred = await skytells.predictions.get(id);
+```
+
+> The old method names still work but log deprecation warnings and will be removed in a future version.
+
+## Documentation
+
+- See [Official Docs](https://docs.skytells.ai/sdks/ts/) for the latest documentation.
+- [SDK API Reference](docs/SDK.md) — Full method signatures, parameter tables, and examples
+- [Developer Guide](docs/Guide.md) — Step-by-step walkthroughs and patterns
 
 ### Non-JSON Response Handling
 
@@ -205,7 +308,7 @@ The SDK automatically handles cases when the server doesn't respond with valid J
 
 ```typescript
 try {
-  const models = await client.listModels();
+  const models = await skytells.listModels();
 } catch (error) {
   if (error instanceof SkytellsError) {
     if (error.errorId === 'SERVER_ERROR') {

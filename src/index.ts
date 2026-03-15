@@ -7,11 +7,16 @@ import { ClientOptions } from './types/shared.types.js';
  * @param options Optional client configuration
  * @returns A new Skytells client instance
  */
-export function createClient(apiKey?: string, options: ClientOptions = {}): SkytellsClient {
+export function Skytells(apiKey?: string, options: ClientOptions = {}): SkytellsClient {
   return new SkytellsClient(apiKey, options);
 }
 
+/** @deprecated Use {@link Skytells}() instead. */
+export const createClient = Skytells;
+
 export * from './types/index.js';
-export { SkytellsClient } from './client.js';
+export { SkytellsClient, Prediction, PredictionsAPI, ModelsAPI } from './client.js';
 export { API_BASE_URL } from './endpoints.js';
-export { SkytellsError } from './types/shared.types.js'; 
+export { SkytellsError } from './types/shared.types.js';
+
+export default Skytells; 

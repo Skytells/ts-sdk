@@ -1,24 +1,70 @@
 import { API_BASE_URL } from './endpoints.js';
-import { SkytellsError } from './types/shared.types.js';
+import { SkytellsError, RetryOptions } from './types/shared.types.js';
 
 // Default timeout in milliseconds
 // 60 seconds
 const DEFAULT_TIMEOUT = 60000;
 
+const DEFAULT_RETRY_ON = [429, 500, 502, 503, 504];
+
 export class HTTP {
   private apiKey?: string;
   private baseUrl: string;
   private timeout: number;
+  private customHeaders: Record<string, string>;
+  private retry: Required<RetryOptions>;
+  private fetchFn: typeof fetch;
 
-  constructor(apiKey?: string, baseUrl: string = API_BASE_URL, timeout: number = DEFAULT_TIMEOUT) {
+  constructor(
+    apiKey?: string,
+    baseUrl: string = API_BASE_URL,
+    timeout: number = DEFAULT_TIMEOUT,
+    headers: Record<string, string> = {},
+    retry: RetryOptions = {},
+    fetchFn?: typeof fetch,
+  ) {
     this.apiKey = apiKey;
     this.baseUrl = baseUrl;
     this.timeout = timeout;
+    this.customHeaders = headers;
+    this.retry = {
+      retries: retry.retries ?? 0,
+      retryDelay: retry.retryDelay ?? 1000,
+      retryOn: retry.retryOn ?? DEFAULT_RETRY_ON,
+    };
+    this.fetchFn = fetchFn ?? globalThis.fetch.bind(globalThis);
   }
 
   async request<T>(method: 'GET' | 'POST' | 'DELETE', path: string, data?: Record<string, unknown>): Promise<T> {
+    let lastError: SkytellsError | undefined;
+
+    for (let attempt = 0; attempt <= this.retry.retries; attempt++) {
+      try {
+        return await this.executeRequest<T>(method, path, data);
+      } catch (error) {
+        if (error instanceof SkytellsError) {
+          lastError = error;
+          const isRetryable = this.retry.retryOn.includes(error.httpStatus);
+          if (isRetryable && attempt < this.retry.retries) {
+            await this.delay(this.retry.retryDelay * (attempt + 1));
+            continue;
+          }
+        }
+        throw error;
+      }
+    }
+
+    throw lastError;
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  private async executeRequest<T>(method: 'GET' | 'POST' | 'DELETE', path: string, data?: Record<string, unknown>): Promise<T> {
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
+      ...this.customHeaders,
     };
 
     if (this.apiKey) {
@@ -50,7 +96,7 @@ export class HTTP {
 
     try {
       // Use native fetch which is available in modern browsers and edge environments
-      const response = await fetch(`${this.baseUrl}${path}`, options);
+      const response = await this.fetchFn(`${this.baseUrl}${path}`, options);
       
       // Get the response content type to check if it's JSON
       const contentType = response.headers.get('content-type') || '';
