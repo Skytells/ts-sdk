@@ -26,7 +26,6 @@ export enum PricingUnit {
   TOKEN = 'token',
   FIVE_SECONDS = '5 seconds',
   MINUTE = 'minute',
-
 }
 
 export enum PricingOperator {
@@ -71,7 +70,7 @@ export interface Vendor {
   image_url: string;
   verified: boolean;
   slug: string;
-  metadata: any | null;
+  metadata: unknown;
 }
 
 export interface Service {
@@ -125,4 +124,4 @@ export interface Model {
   service?: Service;
   input_schema?: ModelInputSchema | null;
   output_schema?: ModelOutputSchema | null;
-} 
+}

@@ -1,3 +1,5 @@
+import type { Webhook } from '../webhooks.js';
+
 /**
  * Payload for creating a prediction via the Skytells API.
  *
@@ -18,15 +20,18 @@ export interface PredictionRequest {
   /** Key-value input parameters for the model (e.g. `{ prompt: "..." }`). */
   input: Record<string, any>;
   /**
-   * Optional webhook configuration to receive prediction lifecycle events.
-   * The API will POST to the given URL when the specified events occur.
+   * Webhook configuration — Skytells POSTs the prediction JSON to `url` on subscribed events.
+   * Prefer `new Webhook(url, [...]).toJSON()` or pass a `Webhook` instance (client normalizes for JSON).
+   * @see https://docs.skytells.ai/webhooks/
    */
-  webhook?: {
-    /** The URL to receive webhook events. */
-    url: string;
-    /** Events to subscribe to (e.g. `["completed", "failed"]`). */
-    events: string[];
-  };
+  webhook?:
+    | Webhook
+    | {
+        /** HTTPS endpoint that accepts POST (raw JSON body + `X-Skytells-Signature`). */
+        url: string;
+        /** Event names: `completed`, `failed`, `canceled`, `started` — see `WebhookEvent`. */
+        events: ReadonlyArray<string>;
+      };
   /**
    * If `true`, the API blocks until the prediction completes and returns the final result.
    * If `false` (default), returns immediately with status `"pending"`.
@@ -38,6 +43,20 @@ export interface PredictionRequest {
    * @default false
    */
   stream?: boolean;
+}
+
+/**
+ * SDK-only options for {@link SkytellsClient.predict}, {@link PredictionsAPI.create},
+ * {@link SkytellsClient.run}, and {@link SkytellsClient.queue} — never sent in `POST /predict` JSON.
+ */
+export interface PredictionSdkOptions {
+  /**
+   * When `true`, before the request the client calls `GET /model/{slug}` and may throw `SDK_ERROR` if the
+   * model is OpenAI-chat-only (use `client.chat.completions.create` instead). Metadata is cached per client
+   * for {@link PREFETCHED_MODEL_CACHE_TTL_MS}; max distinct slugs is `client.config.prefetchMaxSlugs`
+   * (smaller when `runtime: "edge"`).
+   */
+  compatibilityCheck?: boolean;
 }
 
 /**
@@ -59,17 +78,31 @@ export interface RunOptions {
   /**
    * Optional webhook configuration to receive prediction lifecycle events.
    */
-  webhook?: {
-    /** The URL to receive webhook events. */
-    url: string;
-    /** Events to subscribe to. */
-    events: string[];
-  };
+  webhook?:
+    | Webhook
+    | {
+        url: string;
+        events: ReadonlyArray<string>;
+      };
   /**
    * If `true`, enables streaming for the prediction.
    * @default false
    */
   stream?: boolean;
+  /**
+   * Poll interval in ms while waiting — **only** when {@link SkytellsClient.run} is used **with** `onProgress`
+   * (background `predictions.create` + {@link SkytellsClient.wait}). Ignored for the default blocking `run()` path.
+   * @default 5000
+   */
+  interval?: number;
+  /**
+   * Max time before `WAIT_TIMEOUT` — **only** with `onProgress`; see {@link WaitOptions.maxWait}.
+   */
+  maxWait?: number;
+  /**
+   * Abort background wait/polling — **only** with `onProgress`. Throws `SkytellsError` with `errorId: 'ABORTED'`.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -126,6 +159,11 @@ export interface WaitOptions {
   interval?: number;
   /** Maximum time to wait in milliseconds. Throws `WAIT_TIMEOUT` error if exceeded. */
   maxWait?: number;
+  /**
+   * When aborted, stops polling and throws `SkytellsError` with `errorId: 'ABORTED'`.
+   * Use with `AbortController` to cancel waits when a user navigates away or a job is superseded.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -135,6 +173,8 @@ export interface WaitOptions {
 export interface QueueItem {
   /** The prediction request payload to dispatch. */
   request: PredictionRequest;
+  /** Per-item SDK options (e.g. {@link PredictionSdkOptions.compatibilityCheck}) passed to {@link PredictionsAPI.create}. */
+  sdk?: PredictionSdkOptions;
 }
 
 /**
@@ -204,7 +244,10 @@ export enum PredictionSource {
 export interface PredictionResponse {
   /** Current lifecycle status of the prediction. */
   status: PredictionStatus;
-  /** Unique prediction identifier (e.g. `"pred_abc123"`). */
+  /**
+   * Unique prediction identifier (opaque string; often a UUID from the API).
+   * Present on every prediction API response payload.
+   */
   id: string;
   /** Type of prediction workload (`"inference"` or `"training"`). */
   type: PredictionType;
@@ -302,4 +345,4 @@ export interface PredictionResponse {
     /** URL to delete the prediction. */
     delete?: string;
   };
-} 
+}

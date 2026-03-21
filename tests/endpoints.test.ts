@@ -1,8 +1,12 @@
-import { API_BASE_URL, ENDPOINTS } from '../src/endpoints';
+import { API_BASE_URL, ENDPOINTS, ORCHESTRATOR_BASE_URL } from '../src/endpoints';
 
 describe('Endpoints', () => {
   test('API_BASE_URL is correct', () => {
     expect(API_BASE_URL).toBe('https://api.skytells.ai/v1');
+  });
+
+  test('ORCHESTRATOR_BASE_URL is correct', () => {
+    expect(ORCHESTRATOR_BASE_URL).toBe('https://orchestrator.skytells.ai');
   });
 
   test('static endpoints', () => {
@@ -14,10 +18,12 @@ describe('Endpoints', () => {
   test('MODEL_BY_SLUG builds correct path', () => {
     expect(ENDPOINTS.MODEL_BY_SLUG('flux-pro')).toBe('/model/flux-pro');
     expect(ENDPOINTS.MODEL_BY_SLUG('truefusion')).toBe('/model/truefusion');
+    expect(ENDPOINTS.MODEL_BY_SLUG('weird/slug')).toBe('/model/weird%2Fslug');
   });
 
   test('PREDICTION_BY_ID builds correct path', () => {
     expect(ENDPOINTS.PREDICTION_BY_ID('pred_123')).toBe('/predictions/pred_123');
+    expect(ENDPOINTS.PREDICTION_BY_ID('pred/x')).toBe('/predictions/pred%2Fx');
   });
 
   test('STREAM_PREDICTION_BY_ID builds correct path', () => {

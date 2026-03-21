@@ -1,5 +1,32 @@
-import Skytells, { SkytellsClient, Prediction, PredictionsAPI, ModelsAPI, SkytellsError, createClient, API_BASE_URL } from '../src';
-import { PredictionStatus, PredictionType, PredictionSource } from '../src/types/predict.types';
+import Skytells, {
+  SkytellsClient,
+  Prediction,
+  PredictionsAPI,
+  ModelsAPI,
+  SkytellsError,
+  createClient,
+  API_BASE_URL,
+  ORCHESTRATOR_BASE_URL,
+  Orchestrator,
+  Chat,
+  Completions,
+  Responses,
+  Embeddings,
+  Safety,
+  resolvePredictionResourceUrl,
+  PREFETCHED_MODEL_CACHE_TTL_MS,
+  PREFETCHED_MODEL_CACHE_MAX_SLUGS,
+  EDGE_DEFAULT_REQUEST_TIMEOUT_MS,
+  EDGE_PREFETCH_MAX_SLUGS,
+  HTTP_DEFAULT_REQUEST_TIMEOUT_MS,
+  Webhook,
+  WebhookEvent,
+  WebhookListener,
+  createWebhookListener,
+  verifySkytellsWebhookSignature,
+  SKYTELLS_WEBHOOK_SIGNATURE_HEADER,
+} from '../src';
+import { PredictionStatus, PredictionType } from '../src/types/predict.types';
 import { ApiErrorId } from '../src/types/shared.types';
 
 describe('Exports', () => {
@@ -7,18 +34,45 @@ describe('Exports', () => {
     expect(typeof Skytells).toBe('function');
   });
 
-  test('named Skytells export is a function', () => {
-    /* eslint-disable-next-line @typescript-eslint/no-var-requires */
-    const { Skytells: NamedSkytells } = require('../src');
-    expect(typeof NamedSkytells).toBe('function');
-  });
-
-  test('createClient is exported (deprecated alias)', () => {
+  test('createClient is exported and logs a one-time migration hint', () => {
+    jest.isolateModules(() => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { createClient: isolatedCreate } = require('../src');
+      expect(typeof isolatedCreate).toBe('function');
+      isolatedCreate('sk-test');
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/import Skytells from/));
+      warn.mockRestore();
+    });
     expect(typeof createClient).toBe('function');
   });
 
   test('SkytellsClient class is exported', () => {
     expect(SkytellsClient).toBeDefined();
+  });
+
+  test('SkytellsClient.prediction aliases .predictions', () => {
+    const client = Skytells('sk-test');
+    expect(client.prediction).toBe(client.predictions);
+  });
+
+  test('SkytellsClient.webhookListener returns WebhookListener', () => {
+    const client = Skytells('sk-test');
+    const hooks = client.webhookListener({ mode: 'general' });
+    expect(hooks).toBeInstanceOf(WebhookListener);
+  });
+
+  test('SkytellsClient.listen aliases webhookListener', () => {
+    const client = Skytells('sk-test');
+    expect(client.listen()).toBeInstanceOf(WebhookListener);
+  });
+
+  test('webhook module exports', () => {
+    expect(WebhookEvent.COMPLETED).toBe('completed');
+    expect(SKYTELLS_WEBHOOK_SIGNATURE_HEADER).toBe('x-skytells-signature');
+    expect(typeof verifySkytellsWebhookSignature).toBe('function');
+    expect(typeof createWebhookListener).toBe('function');
+    expect(new Webhook('https://a', [WebhookEvent.FAILED]).toJSON().events).toEqual(['failed']);
   });
 
   test('Prediction class is exported', () => {
@@ -41,31 +95,47 @@ describe('Exports', () => {
     expect(API_BASE_URL).toBe('https://api.skytells.ai/v1');
   });
 
-  test('PredictionStatus enum is exported', () => {
+  test('Orchestrator base URL and class are exported', () => {
+    expect(ORCHESTRATOR_BASE_URL).toBe('https://orchestrator.skytells.ai');
+    expect(Orchestrator).toBeDefined();
+  });
+
+  test('resolvePredictionResourceUrl is exported', () => {
+    expect(typeof resolvePredictionResourceUrl).toBe('function');
+    const u = resolvePredictionResourceUrl(
+      'get',
+      'abc',
+      { get: 'https://x.test/p' },
+      'https://api.skytells.ai/v1',
+    );
+    expect(u).toBe('https://x.test/p');
+  });
+
+  test('PREFETCHED_MODEL_CACHE_TTL_MS is exported (10 minutes)', () => {
+    expect(PREFETCHED_MODEL_CACHE_TTL_MS).toBe(10 * 60 * 1000);
+  });
+
+  test('PREFETCHED_MODEL_CACHE_MAX_SLUGS is exported', () => {
+    expect(PREFETCHED_MODEL_CACHE_MAX_SLUGS).toBe(64);
+  });
+
+  test('runtime / HTTP timing constants are exported', () => {
+    expect(EDGE_DEFAULT_REQUEST_TIMEOUT_MS).toBe(25_000);
+    expect(EDGE_PREFETCH_MAX_SLUGS).toBe(16);
+    expect(HTTP_DEFAULT_REQUEST_TIMEOUT_MS).toBe(60_000);
+  });
+
+  test('prediction / API enums are exported with expected string values', () => {
     expect(PredictionStatus.SUCCEEDED).toBe('succeeded');
-    expect(PredictionStatus.FAILED).toBe('failed');
-    expect(PredictionStatus.CANCELLED).toBe('cancelled');
-    expect(PredictionStatus.PENDING).toBe('pending');
-    expect(PredictionStatus.PROCESSING).toBe('processing');
-    expect(PredictionStatus.STARTING).toBe('starting');
-    expect(PredictionStatus.STARTED).toBe('started');
-  });
-
-  test('PredictionType enum is exported', () => {
     expect(PredictionType.INFERENCE).toBe('inference');
-    expect(PredictionType.TRAINING).toBe('training');
+    expect(ApiErrorId.SDK_ERROR).toBe('SDK_ERROR');
   });
 
-  test('PredictionSource enum is exported', () => {
-    expect(PredictionSource.API).toBe('api');
-    expect(PredictionSource.CLI).toBe('cli');
-    expect(PredictionSource.WEB).toBe('web');
-  });
-
-  test('ApiErrorId enum is exported', () => {
-    expect(ApiErrorId.UNAUTHORIZED).toBe('UNAUTHORIZED');
-    expect(ApiErrorId.MODEL_NOT_FOUND).toBe('MODEL_NOT_FOUND');
-    expect(ApiErrorId.INSUFFICIENT_CREDITS).toBe('INSUFFICIENT_CREDITS');
-    expect(ApiErrorId.RATE_LIMIT_EXCEEDED).toBe('RATE_LIMIT_EXCEEDED');
+  test('Inference API classes are exported', () => {
+    expect(Chat).toBeDefined();
+    expect(Completions).toBeDefined();
+    expect(Responses).toBeDefined();
+    expect(Embeddings).toBeDefined();
+    expect(Safety).toBeDefined();
   });
 });

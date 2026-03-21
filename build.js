@@ -1,4 +1,4 @@
-// Simple build script to generate both ESM and CommonJS outputs
+// ESM + CJS from ./src only (tsconfig excludes docs/ and tests).
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';

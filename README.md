@@ -1,5 +1,12 @@
 # Skytells JavaScript/TypeScript SDK
 
+[![npm version](https://img.shields.io/npm/v/skytells.svg?style=flat-square)](https://www.npmjs.com/package/skytells)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
+[![Docs](https://img.shields.io/badge/docs-skytells.ai-blueviolet?style=flat-square)](https://docs.skytells.ai/sdks/ts/)
+[![Skytells Learn | Docs](https://img.shields.io/badge/docs-skytells-learn-blueviolet?style=flat-square)](https://learn.skytells.ai/sdks/ts/)
+[![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen?style=flat-square)](docs/Architecture.md)
+
 The official JavaScript/TypeScript SDK for interacting with the [Skytells](https://skytells.ai) API. Edge-compatible with Cloudflare Workers, Vercel Edge Functions, Netlify Edge Functions, and more.
 
 Generate text, photos, videos, avatars, audio, music, and more using Skytells' own models and partner models — all through a single API. [Explore models →](https://skytells.ai/explore/models)
@@ -12,6 +19,28 @@ npm install skytells
 yarn add skytells
 # or
 pnpm add skytells
+```
+
+## Import
+
+```ts
+// Recommended: factory (default export)
+import Skytells from 'skytells';
+
+// Direct class import
+import { SkytellsClient } from 'skytells';
+
+// Both in one import
+import Skytells, { SkytellsClient } from 'skytells';
+```
+
+Optionally, you may use the named factory:
+
+```ts
+import { createClient } from 'skytells';
+
+const client = createClient('sk-your-api-key');
+// equivalent to: Skytells('sk-your-api-key') and new SkytellsClient('sk-your-api-key')
 ```
 
 ## Quick Start
@@ -27,6 +56,13 @@ const prediction = await skytells.run('truefusion', {
 });
 
 console.log(prediction.outputs()); // "https://delivery.skytells.cloud/..."
+```
+
+**Orchestrator** (workflows / webhook triggers) uses a separate `wfb_…` key. Optional **`orchestratorApiKey`** on the same client keeps both products in one place — the SDK applies the right auth per API ([Orchestrator.md](docs/Orchestrator.md)):
+
+```typescript
+const client = Skytells('sk-…', { orchestratorApiKey: 'wfb_…' });
+await client.orchestrator.webhooks.execute(workflowId, { /* JSON body */ });
 ```
 
 ### Obtaining an API Key
@@ -91,10 +127,11 @@ console.log(response.id, response.status); // "pred_..." "pending"
 const result = await skytells.wait(response);
 console.log(result.output);
 
-// Or with a timeout and progress
+// Or with a timeout and progress (first GET is immediate; then every interval)
 const result = await skytells.wait(response, {
-  interval: 2000,   // poll every 2s
-  maxWait: 120000,  // timeout after 2 min
+  interval: 2000,   // delay between polls after the first refresh
+  maxWait: 120000,  // wall-clock limit → WAIT_TIMEOUT
+  // signal: ac.signal, // optional AbortSignal → ABORTED
 }, (p) => console.log(p.status));
 ```
 
@@ -120,18 +157,14 @@ const completed = await Promise.all(results.map(r => skytells.wait(r)));
 ### Prediction Lifecycle
 
 ```typescript
-// Cancel a running prediction
+// Cancel a running prediction (works while status is pending/starting/processing)
 await prediction.cancel();
-// or by ID
-await skytells.cancelPrediction('pred_abc123');
 
-// Delete a prediction and its assets
+// Delete a prediction and all its output assets from storage
 await prediction.delete();
-// or by ID
-await skytells.deletePrediction('pred_abc123');
 
-// Stream endpoint
-const stream = await skytells.streamPrediction('pred_abc123');
+// Fetch stream metadata for a prediction
+const stream = await prediction.stream();
 console.log(stream.urls?.stream);
 ```
 
@@ -175,17 +208,19 @@ import Skytells from 'skytells';
 
 const skytells = Skytells('your-api-key', {
   baseUrl: 'https://your-proxy.example.com/v1', // Custom API URL
-  timeout: 30000,                                // Request timeout in ms (default: 60000)
-  headers: { 'X-Custom-Header': 'value' },       // Extra headers on every request
+  timeout: 30000, // Omit for defaults: 60000 normally, 25000 when runtime: 'edge'
+  headers: { 'X-Custom-Header': 'value' }, // Extra headers on every request
   retry: {
-    retries: 3,                                  // Retry failed requests (default: 0)
-    retryDelay: 1000,                            // Delay between retries in ms (default: 1000)
-    retryOn: [429, 500, 502, 503, 504],          // Status codes to retry (default)
+    retries: 3, // Retry failed requests (default: 0)
+    retryDelay: 1000, // Base delay; actual wait is retryDelay * (attempt + 1) per retry
+    retryOn: [429, 500, 502, 503, 504],
   },
-  fetch: (url, opts) =>                          // Custom fetch (e.g. Next.js cache workaround)
-    fetch(url, { ...opts, cache: 'no-store' }),
+  fetch: (url, opts) => fetch(url, { ...opts, cache: 'no-store' }),
+  // runtime: 'edge', // Vercel Edge / Workers: shorter default timeout, smaller compat cache, one-time hints
 });
 ```
+
+Inspect resolved settings: **`skytells.config`** (`requestTimeoutMs`, `prefetchMaxSlugs`, `runtime`) and **`skytells.runtime`**.
 
 ## The Prediction Object
 
@@ -213,14 +248,16 @@ When you call `skytells.run()`, you get a `Prediction` object:
 
 ## Edge Compatibility
 
-This SDK works in any environment with Fetch API support:
+This SDK works in any environment with **Fetch** and (for **webhook HMAC verification**) **`crypto.subtle`** (Web Crypto):
 
 - **Cloudflare Workers & Pages**
 - **Vercel Edge Functions**
 - **Netlify Edge Functions**
 - **Deno Deploy**
-- **Node.js 18+**
+- **Node.js** — use **19+** for global `crypto.subtle`, or verify webhooks in an environment that provides it
 - **Browsers**
+
+Pass **`{ runtime: 'edge' }`** when constructing the client on edge/serverless so the SDK uses a **25s default request timeout** (if you don’t set `timeout`) and a **smaller** inference-compat model cache; see **`EDGE_DEFAULT_REQUEST_TIMEOUT_MS`** / **`EDGE_PREFETCH_MAX_SLUGS`** in the package exports.
 
 ## Error Handling
 
@@ -254,10 +291,12 @@ try {
 | `RATE_LIMIT_EXCEEDED` | Too many requests |
 | `PREDICTION_FAILED` | Prediction completed with failure |
 | `WAIT_TIMEOUT` | Polling exceeded `maxWait` |
+| `ABORTED` | `wait()` / `run` polling stopped via `AbortSignal` |
+| `SDK_ERROR` | Client guard (OpenAI-compat model + `compatibilityCheck`, missing `prediction.id`, webhook crypto unavailable, …) |
 | `REQUEST_TIMEOUT` | HTTP request timed out |
 | `NETWORK_ERROR` | Connection issue |
 | `SERVER_ERROR` | Non-JSON response from server |
-| `INVALID_JSON` | Server returned invalid JSON |
+| `INVALID_JSON` | Declared JSON but body failed `JSON.parse` |
 
 ## TypeScript
 
@@ -266,15 +305,54 @@ Full type definitions are included. Key types:
 ```typescript
 import type {
   PredictionRequest,
+  PredictionSdkOptions,
   PredictionResponse,
   PredictionStatus,
   RunOptions,
   WaitOptions,
   Model,
   ClientOptions,
+  SkytellsRuntime,
   PaginatedResponse,
 } from 'skytells';
 ```
+
+Inference guard: pass **`{ compatibilityCheck: true }`** as the **second** argument to **`predict`** / **`predictions.create`**, **fourth** to **`run`** (use `undefined` for `onProgress` if unused), or **second** to **`queue`** — never inside the JSON body.
+
+## Safety
+
+Proactive content moderation and response parsing via `client.safety`:
+
+```typescript
+import Skytells, { SafetyTemplates } from 'skytells';
+
+const client = Skytells(process.env.SKYTELLS_API_KEY);
+
+// Check user input before sending to a model
+const check = await client.safety.checkText(userInput, {
+  template: SafetyTemplates.MODERATE,
+});
+if (!check.passed) {
+  throw new Error(`Blocked: ${check.failedCategories.join(', ')}`);
+}
+
+// Evaluate generated prediction output (image URLs are auto-detected)
+const prediction = await client.run('flux-pro', { input: { prompt: userInput } });
+const eval = await client.safety.evaluate(prediction.output, SafetyTemplates.STRICT);
+if (!eval.passed) {
+  await prediction.delete();
+  throw new Error(`Output blocked: ${eval.failedCategories.join(', ')}`);
+}
+
+// Parse content_filter_results from an existing chat completion (no extra API call)
+const completion = await client.chat.completions.create({ ... });
+if (client.safety.wasFiltered(completion)) {
+  const categories = client.safety.getFilteredCategories(completion);
+  console.warn('Filtered:', categories);
+}
+```
+
+See [Safety.md](docs/Safety.md) for templates, all input types, and integration patterns.
 
 ## Migration from v1.0.2
 
@@ -294,13 +372,26 @@ import type {
 + const pred = await skytells.predictions.get(id);
 ```
 
+`createClient` is still exported for compatibility; the first call logs a console hint to prefer `import Skytells from 'skytells'`.
+
 > The old method names still work but log deprecation warnings and will be removed in a future version.
 
 ## Documentation
 
-- See [Official Docs](https://docs.skytells.ai/sdks/ts/) for the latest documentation.
-- [SDK API Reference](docs/SDK.md) — Full method signatures, parameter tables, and examples
-- [Developer Guide](docs/Guide.md) — Step-by-step walkthroughs and patterns
+- See [Official Docs](https://docs.skytells.ai/sdks/ts/) for hosted documentation.
+- **[Client.md](docs/Client.md)** — `SkytellsClient` in full: options, every method, sub-APIs
+- **[SDKReference.md](docs/SDKReference.md)** — Low-level reference: every class, method, type, constant
+- [Guide.md](docs/Guide.md) — Getting started walkthroughs
+- [Architecture.md](docs/Architecture.md) — Request pipeline, retries, streams, model cache
+- [Reliability.md](docs/Reliability.md) — Timeouts, retries, AbortSignal, edge/serverless patterns
+- [Errors.md](docs/Errors.md) — `SkytellsError` catalog
+- [Prediction.md](docs/Prediction.md) — Predictions: run, wait, queue, cancel, delete
+- [Chat.md](docs/Chat.md) — Chat completions (streaming + tools)
+- [Responses.md](docs/Responses.md) — Responses API (SSE events, multi-turn)
+- [Embeddings.md](docs/Embeddings.md) — Embeddings, semantic search, RAG
+- [Safety.md](docs/Safety.md) — Content moderation, templates, prediction evaluation
+- [Webhooks.md](docs/Webhooks.md) — Inbound webhooks, framework integrations, HMAC
+- [Orchestrator.md](docs/Orchestrator.md) — Orchestrator workflows (`wfb_…` key)
 
 ### Non-JSON Response Handling
 
@@ -308,7 +399,7 @@ The SDK automatically handles cases when the server doesn't respond with valid J
 
 ```typescript
 try {
-  const models = await skytells.listModels();
+  const models = await skytells.models.list();
 } catch (error) {
   if (error instanceof SkytellsError) {
     if (error.errorId === 'SERVER_ERROR') {
@@ -344,9 +435,26 @@ npm run lint
 
 See [CHANGELOG.md](CHANGELOG.md) for the latest changes.
 
-## SDK Docs
+## Documentation in this repo
 
-See [SDK Docs](https://docs.skytells.ai/sdks/ts/) for the latest documentation.
+| File | Description |
+|------|-------------|
+| [docs/Client.md](docs/Client.md) | `SkytellsClient`: options, methods, sub-APIs, best practices |
+| [docs/SDKReference.md](docs/SDKReference.md) | Low-level reference: every export, class, type, and constant |
+| [docs/Guide.md](docs/Guide.md) | Getting started — first prediction, chat, embeddings |
+| [docs/Architecture.md](docs/Architecture.md) | Request pipeline, retries, streaming, model cache |
+| [docs/Reliability.md](docs/Reliability.md) | Timeouts, retries, AbortSignal, edge/serverless |
+| [docs/Errors.md](docs/Errors.md) | `SkytellsError` fields and all `errorId` values |
+| [docs/Prediction.md](docs/Prediction.md) | Predictions: run, wait, queue, dispatch, cancel, webhooks |
+| [docs/Chat.md](docs/Chat.md) | Chat completions, streaming, tools, vision |
+| [docs/Responses.md](docs/Responses.md) | Responses API, SSE events, multi-turn |
+| [docs/Embeddings.md](docs/Embeddings.md) | Embeddings, semantic search, RAG |
+| [docs/Safety.md](docs/Safety.md) | Safety checks, templates, prediction output evaluation |
+| [docs/Webhooks.md](docs/Webhooks.md) | Inbound webhooks, HMAC verification, framework integrations |
+| [docs/Orchestrator.md](docs/Orchestrator.md) | Orchestrator: workflows, executions, integrations |
+| [docs/.env.example](docs/.env.example) | All environment variables for local dev and CI |
+
+Hosted: [Skytells TS SDK docs](https://docs.skytells.ai/sdks/ts/).
 
 ## License
 

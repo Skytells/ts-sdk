@@ -8,7 +8,12 @@ describe('SkytellsError', () => {
   });
 
   test('sets all properties', () => {
-    const err = new SkytellsError('Something went wrong', 'VALIDATION_ERROR', 'field is required', 422);
+    const err = new SkytellsError(
+      'Something went wrong',
+      'VALIDATION_ERROR',
+      'field is required',
+      422,
+    );
     expect(err.message).toBe('Something went wrong');
     expect(err.errorId).toBe('VALIDATION_ERROR');
     expect(err.details).toBe('field is required');

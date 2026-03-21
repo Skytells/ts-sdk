@@ -1,4 +1,15 @@
-import { Skytells, SkytellsClient, Prediction, PredictionsAPI, ModelsAPI } from '../src';
+import {
+  Skytells,
+  SkytellsClient,
+  Prediction,
+  PredictionsAPI,
+  ModelsAPI,
+  PREFETCHED_MODEL_CACHE_TTL_MS,
+  PREFETCHED_MODEL_CACHE_MAX_SLUGS,
+  EDGE_DEFAULT_REQUEST_TIMEOUT_MS,
+  EDGE_PREFETCH_MAX_SLUGS,
+  HTTP_DEFAULT_REQUEST_TIMEOUT_MS,
+} from '../src';
 import { API_BASE_URL } from '../src/endpoints';
 import { SkytellsError } from '../src/types/shared.types';
 import { PredictionStatus } from '../src/types/predict.types';
@@ -8,7 +19,10 @@ global.fetch = jest.fn();
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
-function mockFetch(data: any, options: { ok?: boolean; status?: number; contentType?: string } = {}) {
+function mockFetch(
+  data: any,
+  options: { ok?: boolean; status?: number; contentType?: string } = {},
+) {
   const { ok = true, status = 200, contentType = 'application/json' } = options;
   (global.fetch as jest.Mock).mockResolvedValue({
     ok,
@@ -84,6 +98,68 @@ describe('SkytellsClient', () => {
   });
 });
 
+// ─── PredictionSdkOptions.compatibilityCheck (inference guard) ────────
+
+describe('PredictionSdkOptions.compatibilityCheck', () => {
+  beforeEach(() => {
+    jest.resetAllMocks();
+  });
+
+  test('default skips GET /model before predict / predictions.create', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mockFetch(makePredictionResponse({ status: PredictionStatus.PENDING }));
+      const c = Skytells('sk-test');
+      await c.predictions.create({ model: 'flux-pro', input: { prompt: 'x' } });
+      const modelGets = (global.fetch as jest.Mock).mock.calls.filter((k) =>
+        String(k[0]).includes(`${API_BASE_URL}/model/`),
+      );
+      expect(modelGets).toHaveLength(0);
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test('compatibilityCheck:true in sdk options runs GET /model/{slug} before create', async () => {
+    const modelData = { name: 'flux-pro', namespace: 'flux-pro', type: 'image', metadata: {} };
+    mockFetchSequence([
+      { data: modelData },
+      { data: makePredictionResponse({ status: PredictionStatus.PENDING }) },
+    ]);
+    const c = Skytells('sk-test');
+    await c.predictions.create(
+      { model: 'flux-pro', input: { prompt: 'x' } },
+      { compatibilityCheck: true },
+    );
+    const modelGets = (global.fetch as jest.Mock).mock.calls.filter((k) =>
+      String(k[0]).includes(`${API_BASE_URL}/model/flux-pro`),
+    );
+    expect(modelGets.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('POST /predict body omits SDK-only compatibilityCheck', async () => {
+    const modelData = { name: 'flux-pro', namespace: 'flux-pro', type: 'image', metadata: {} };
+    mockFetchSequence([
+      { data: modelData },
+      { data: makePredictionResponse({ status: PredictionStatus.PENDING }) },
+    ]);
+    await Skytells('sk-test').predictions.create(
+      { model: 'flux-pro', input: { prompt: 'x' } },
+      { compatibilityCheck: true },
+    );
+    const predictCalls = (global.fetch as jest.Mock).mock.calls.filter(
+      (c) =>
+        c[1]?.body != null &&
+        String(c[0]).includes(`${API_BASE_URL}/predict`) &&
+        !String(c[0]).includes('/predictions'),
+    );
+    expect(predictCalls).toHaveLength(1);
+    const body = JSON.parse((predictCalls[0][1] as RequestInit).body as string);
+    expect(body).not.toHaveProperty('compatibilityCheck');
+  });
+});
+
 // ─── client.predict() ─────────────────────────────────────────────────
 
 describe('client.predict()', () => {
@@ -116,8 +192,13 @@ describe('client.predict()', () => {
     );
 
     // Verify body contains the payload
-    const callArgs = (global.fetch as jest.Mock).mock.calls[0];
-    const body = JSON.parse(callArgs[1].body);
+    const predictCall = (global.fetch as jest.Mock).mock.calls.find(
+      (c) =>
+        c[1]?.body != null &&
+        String(c[0]).includes(`${API_BASE_URL}/predict`) &&
+        !String(c[0]).includes('/predictions'),
+    );
+    const body = JSON.parse((predictCall as [string, RequestInit])[1].body as string);
     expect(body.model).toBe('flux-pro');
     expect(body.input.prompt).toBe('a cat');
   });
@@ -144,8 +225,13 @@ describe('client.predict()', () => {
       await: true,
     });
 
-    const callArgs = (global.fetch as jest.Mock).mock.calls[0];
-    const body = JSON.parse(callArgs[1].body);
+    const predictCall = (global.fetch as jest.Mock).mock.calls.find(
+      (c) =>
+        c[1]?.body != null &&
+        String(c[0]).includes(`${API_BASE_URL}/predict`) &&
+        !String(c[0]).includes('/predictions'),
+    );
+    const body = JSON.parse((predictCall as [string, RequestInit])[1].body as string);
     expect(body.await).toBe(true);
   });
 });
@@ -175,41 +261,65 @@ describe('client.run()', () => {
 
     await client.run('flux-pro', { input: { prompt: 'test' } });
 
-    const callArgs = (global.fetch as jest.Mock).mock.calls[0];
-    const body = JSON.parse(callArgs[1].body);
+    const predictCall = (global.fetch as jest.Mock).mock.calls.find(
+      (c) =>
+        c[1]?.body != null &&
+        String(c[0]).includes(`${API_BASE_URL}/predict`) &&
+        !String(c[0]).includes('/predictions'),
+    );
+    const body = JSON.parse((predictCall as [string, RequestInit])[1].body as string);
     expect(body.await).toBe(true);
   });
 
   test('polls with onProgress callback', async () => {
     jest.useFakeTimers();
+    try {
+      const pending = makePredictionResponse({
+        status: PredictionStatus.PENDING,
+        output: undefined,
+      });
+      const processing = makePredictionResponse({
+        status: PredictionStatus.PROCESSING,
+        output: undefined,
+      });
+      const succeeded = makePredictionResponse({ status: PredictionStatus.SUCCEEDED });
 
-    const pending = makePredictionResponse({ status: PredictionStatus.PENDING, output: undefined });
-    const processing = makePredictionResponse({ status: PredictionStatus.PROCESSING, output: undefined });
-    const succeeded = makePredictionResponse({ status: PredictionStatus.SUCCEEDED });
+      // create() then wait: POST + 2× GET for poll
+      mockFetchSequence([{ data: pending }, { data: processing }, { data: succeeded }]);
 
-    mockFetchSequence([
-      { data: pending },
-      { data: processing },
-      { data: succeeded },
-    ]);
+      const progressCalls: any[] = [];
+      const promise = client.run('flux-pro', { input: { prompt: 'a cat' }, interval: 5000 }, (p) =>
+        progressCalls.push(p),
+      );
 
-    const progressCalls: any[] = [];
-    const promise = client.run(
-      'flux-pro',
-      { input: { prompt: 'a cat' } },
-      (p) => progressCalls.push(p),
-    );
+      // First poll is immediate; one delay between processing → succeeded
+      await jest.advanceTimersByTimeAsync(5000);
 
-    // Advance through both polling cycles
-    await jest.advanceTimersByTimeAsync(5000);
-    await jest.advanceTimersByTimeAsync(5000);
+      const prediction = await promise;
 
-    const prediction = await promise;
+      expect(prediction).toBeInstanceOf(Prediction);
+      expect(progressCalls.length).toBe(2); // processing + succeeded
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 
-    expect(prediction).toBeInstanceOf(Prediction);
-    expect(progressCalls.length).toBe(2); // processing + succeeded
+  test('run with onProgress uses RunOptions.interval for polling', async () => {
+    jest.useFakeTimers();
+    try {
+      const pending = makePredictionResponse({
+        status: PredictionStatus.PENDING,
+        output: undefined,
+      });
+      const succeeded = makePredictionResponse({ status: PredictionStatus.SUCCEEDED });
+      mockFetchSequence([{ data: pending }, { data: succeeded }]);
 
-    jest.useRealTimers();
+      const promise = client.run('flux-pro', { input: { prompt: 'x' }, interval: 200 }, () => {});
+      await jest.advanceTimersByTimeAsync(200);
+      await promise;
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('throws SkytellsError when prediction fails', async () => {
@@ -220,9 +330,9 @@ describe('client.run()', () => {
     });
     mockFetch(failedResponse);
 
-    await expect(
-      client.run('flux-pro', { input: { prompt: 'fail test' } }),
-    ).rejects.toThrow(SkytellsError);
+    await expect(client.run('flux-pro', { input: { prompt: 'fail test' } })).rejects.toThrow(
+      SkytellsError,
+    );
 
     try {
       mockFetch(failedResponse);
@@ -239,6 +349,7 @@ describe('client.wait()', () => {
   let client: SkytellsClient;
 
   beforeEach(() => {
+    jest.useRealTimers();
     jest.resetAllMocks();
     client = Skytells('sk-test');
   });
@@ -252,8 +363,17 @@ describe('client.wait()', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  test('throws SDK_ERROR when prediction id is missing', async () => {
+    const bad = { ...makePredictionResponse(), id: '' };
+    await expect(client.wait(bad)).rejects.toMatchObject({ errorId: 'SDK_ERROR' });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   test('polls until succeeded', async () => {
-    const initial = makePredictionResponse({ status: PredictionStatus.PROCESSING, output: undefined });
+    const initial = makePredictionResponse({
+      status: PredictionStatus.PROCESSING,
+      output: undefined,
+    });
 
     mockFetchSequence([
       { data: makePredictionResponse({ status: PredictionStatus.PROCESSING, output: undefined }) },
@@ -263,6 +383,30 @@ describe('client.wait()', () => {
     const result = await client.wait(initial, { interval: 10 });
     expect(result.status).toBe(PredictionStatus.SUCCEEDED);
     expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('polls using urls.get when present (API protocol)', async () => {
+    const getUrl = 'https://api.skytells.ai/v1/predictions/poll_uuid';
+    const initial = makePredictionResponse({
+      id: 'poll_uuid',
+      status: PredictionStatus.PROCESSING,
+      output: undefined,
+      urls: { get: getUrl },
+    });
+
+    mockFetchSequence([
+      {
+        data: makePredictionResponse({
+          id: 'poll_uuid',
+          status: PredictionStatus.SUCCEEDED,
+          urls: { get: getUrl },
+        }),
+      },
+    ]);
+
+    const result = await client.wait(initial, { interval: 10 });
+    expect(result.status).toBe(PredictionStatus.SUCCEEDED);
+    expect(global.fetch).toHaveBeenCalledWith(getUrl, expect.objectContaining({ method: 'GET' }));
   });
 
   test('invokes onProgress on each poll', async () => {
@@ -279,22 +423,40 @@ describe('client.wait()', () => {
     expect(callbacks).toEqual([PredictionStatus.PROCESSING, PredictionStatus.SUCCEEDED]);
   });
 
+  test('throws ABORTED when AbortSignal is aborted', async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const initial = makePredictionResponse({
+      status: PredictionStatus.PROCESSING,
+      output: undefined,
+    });
+
+    await expect(client.wait(initial, { interval: 100, signal: ac.signal })).rejects.toMatchObject({
+      errorId: 'ABORTED',
+    });
+  });
+
   test('throws WAIT_TIMEOUT when maxWait exceeded', async () => {
-    const initial = makePredictionResponse({ status: PredictionStatus.PROCESSING, output: undefined });
+    const initial = makePredictionResponse({
+      status: PredictionStatus.PROCESSING,
+      output: undefined,
+    });
 
     // Never resolves to terminal — keep returning processing
+    const processingJson = JSON.stringify(
+      makePredictionResponse({ status: PredictionStatus.PROCESSING, output: undefined }),
+    );
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: true,
       status: 200,
       headers: { get: jest.fn().mockReturnValue('application/json') },
-      json: jest.fn().mockResolvedValue(
-        makePredictionResponse({ status: PredictionStatus.PROCESSING, output: undefined }),
-      ),
+      json: jest.fn().mockResolvedValue(JSON.parse(processingJson)),
+      text: jest.fn().mockResolvedValue(processingJson),
     });
 
-    await expect(
-      client.wait(initial, { interval: 10, maxWait: 50 }),
-    ).rejects.toThrow(SkytellsError);
+    await expect(client.wait(initial, { interval: 10, maxWait: 50 })).rejects.toThrow(
+      SkytellsError,
+    );
 
     try {
       await client.wait(initial, { interval: 10, maxWait: 50 });
@@ -381,10 +543,16 @@ describe('client.queue() & client.dispatch()', () => {
 
 describe('client.streamPrediction()', () => {
   let client: SkytellsClient;
+  let warnSpy: jest.SpyInstance;
 
   beforeEach(() => {
     jest.resetAllMocks();
     client = Skytells('sk-test');
+    warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
   });
 
   test('sends GET to /predictions/:id/stream', async () => {
@@ -401,16 +569,40 @@ describe('client.streamPrediction()', () => {
     );
     expect(result.urls?.stream).toBe('https://stream.example.com/pred_123');
   });
+
+  test('uses urls.stream when passed (API protocol)', async () => {
+    mockFetch(makePredictionResponse({}));
+    const streamUrl = 'https://api.skytells.ai/v1/predictions/pred_123/stream';
+
+    await client.streamPrediction('pred_123', { stream: streamUrl });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      streamUrl,
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  test('logs deprecation warning', async () => {
+    mockFetch(makePredictionResponse({}));
+    await client.streamPrediction('pred_123');
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('streamPrediction'));
+  });
 });
 
 // ─── client.cancelPrediction() ────────────────────────────────────────
 
 describe('client.cancelPrediction()', () => {
   let client: SkytellsClient;
+  let warnSpy: jest.SpyInstance;
 
   beforeEach(() => {
     jest.resetAllMocks();
     client = Skytells('sk-test');
+    warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
   });
 
   test('sends POST to /predictions/:id/cancel', async () => {
@@ -430,10 +622,16 @@ describe('client.cancelPrediction()', () => {
 
 describe('client.deletePrediction()', () => {
   let client: SkytellsClient;
+  let warnSpy: jest.SpyInstance;
 
   beforeEach(() => {
     jest.resetAllMocks();
     client = Skytells('sk-test');
+    warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
   });
 
   test('sends DELETE to /predictions/:id/delete', async () => {
@@ -548,6 +746,23 @@ describe('Prediction', () => {
     expect(result.status).toBe(PredictionStatus.CANCELLED);
   });
 
+  test('.cancel() uses urls.cancel from prediction when present', async () => {
+    const cancelUrl = 'https://api.skytells.ai/v1/predictions/pred_can/cancel';
+    const p = await makePrediction({
+      id: 'pred_can',
+      urls: { cancel: cancelUrl },
+    });
+    jest.resetAllMocks();
+    mockFetch(makePredictionResponse({ id: 'pred_can', status: PredictionStatus.CANCELLED }));
+
+    await p.cancel();
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      cancelUrl,
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
   // ── delete() ──────────────────────────────────────────
 
   test('.delete() sends DELETE to delete endpoint', async () => {
@@ -561,6 +776,182 @@ describe('Prediction', () => {
       `${API_BASE_URL}/predictions/pred_del/delete`,
       expect.objectContaining({ method: 'DELETE' }),
     );
+  });
+
+  test('.delete() uses urls.delete from prediction when present', async () => {
+    const deleteUrl = 'https://api.skytells.ai/v1/predictions/pred_del2/delete';
+    const p = await makePrediction({
+      id: 'pred_del2',
+      urls: { delete: deleteUrl },
+    });
+    jest.resetAllMocks();
+    mockFetch(makePredictionResponse({ id: 'pred_del2' }));
+
+    await p.delete();
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      deleteUrl,
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+  });
+
+  test('.stream() sends GET to stream endpoint (prefer over client.streamPrediction)', async () => {
+    const p = await makePrediction({
+      id: 'pred_str',
+      urls: { stream: `${API_BASE_URL}/predictions/pred_str/stream` },
+    });
+    jest.resetAllMocks();
+    const meta = makePredictionResponse({
+      id: 'pred_str',
+      urls: { stream: 'https://stream.example.com/x' },
+    });
+    mockFetch(meta);
+
+    const result = await p.stream();
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      `${API_BASE_URL}/predictions/pred_str/stream`,
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(result.urls?.stream).toBe('https://stream.example.com/x');
+  });
+});
+
+// ─── Prefetched model cache (inference compatibility guard) ───────────
+
+describe('prefetched model cache (inference compatibility guard)', () => {
+  const modelData = { name: 'flux-pro', namespace: 'flux-pro', type: 'image', metadata: {} };
+
+  beforeEach(() => {
+    jest.resetAllMocks();
+  });
+
+  test('reuses prefetched model for same slug (one GET /model per TTL window)', async () => {
+    const client = Skytells('sk-test');
+    mockFetchSequence([
+      { data: modelData },
+      { data: makePredictionResponse({ id: 'a', status: PredictionStatus.PENDING }) },
+      { data: makePredictionResponse({ id: 'b', status: PredictionStatus.PENDING }) },
+    ]);
+
+    await client.predictions.create(
+      { model: 'flux-pro', input: { prompt: '1' } },
+      { compatibilityCheck: true },
+    );
+    await client.predictions.create(
+      { model: 'flux-pro', input: { prompt: '2' } },
+      { compatibilityCheck: true },
+    );
+
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    const modelGets = (global.fetch as jest.Mock).mock.calls.filter((c) =>
+      String(c[0]).includes(`${API_BASE_URL}/model/`),
+    );
+    expect(modelGets).toHaveLength(1);
+  });
+
+  test('purgePrefetchedModelCache() forces a fresh GET /model', async () => {
+    const client = Skytells('sk-test');
+    mockFetchSequence([
+      { data: modelData },
+      { data: makePredictionResponse({ id: 'a', status: PredictionStatus.PENDING }) },
+      { data: modelData },
+      { data: makePredictionResponse({ id: 'b', status: PredictionStatus.PENDING }) },
+    ]);
+
+    await client.predictions.create(
+      { model: 'flux-pro', input: { prompt: '1' } },
+      { compatibilityCheck: true },
+    );
+    client.purgePrefetchedModelCache();
+    await client.predictions.create(
+      { model: 'flux-pro', input: { prompt: '2' } },
+      { compatibilityCheck: true },
+    );
+
+    expect(global.fetch).toHaveBeenCalledTimes(4);
+    const modelGets = (global.fetch as jest.Mock).mock.calls.filter((c) =>
+      String(c[0]).includes(`${API_BASE_URL}/model/`),
+    );
+    expect(modelGets).toHaveLength(2);
+  });
+
+  test('purgePrefetchedModelCache(slug) evicts only that slug', async () => {
+    const client = Skytells('sk-test');
+    const otherModel = { ...modelData, namespace: 'other-model', name: 'other-model' };
+    mockFetchSequence([
+      { data: modelData },
+      { data: makePredictionResponse({ id: 'a1', status: PredictionStatus.PENDING }) },
+      { data: otherModel },
+      { data: makePredictionResponse({ id: 'a2', status: PredictionStatus.PENDING }) },
+    ]);
+
+    await client.predictions.create(
+      { model: 'flux-pro', input: { prompt: '1' } },
+      { compatibilityCheck: true },
+    );
+    await client.predictions.create(
+      { model: 'other-model', input: { prompt: '2' } },
+      { compatibilityCheck: true },
+    );
+    expect(global.fetch).toHaveBeenCalledTimes(4);
+
+    jest.resetAllMocks();
+    mockFetchSequence([
+      { data: modelData },
+      { data: makePredictionResponse({ id: 'b1', status: PredictionStatus.PENDING }) },
+      { data: makePredictionResponse({ id: 'b2', status: PredictionStatus.PENDING }) },
+    ]);
+
+    client.purgePrefetchedModelCache('flux-pro');
+    await client.predictions.create(
+      { model: 'flux-pro', input: { prompt: '3' } },
+      { compatibilityCheck: true },
+    );
+    await client.predictions.create(
+      { model: 'other-model', input: { prompt: '4' } },
+      { compatibilityCheck: true },
+    );
+
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    const modelGets = (global.fetch as jest.Mock).mock.calls.filter((c) =>
+      String(c[0]).includes(`${API_BASE_URL}/model/`),
+    );
+    expect(modelGets).toHaveLength(1);
+  });
+
+  test('refetches model after TTL', async () => {
+    jest.useFakeTimers({ now: Date.now() });
+    try {
+      const client = Skytells('sk-test');
+      const t0 = Date.now();
+      mockFetchSequence([
+        { data: modelData },
+        { data: makePredictionResponse({ id: 'a', status: PredictionStatus.PENDING }) },
+        { data: makePredictionResponse({ id: 'b', status: PredictionStatus.PENDING }) },
+        { data: modelData },
+        { data: makePredictionResponse({ id: 'c', status: PredictionStatus.PENDING }) },
+      ]);
+
+      await client.predictions.create(
+        { model: 'flux-pro', input: { prompt: '1' } },
+        { compatibilityCheck: true },
+      );
+      await client.predictions.create(
+        { model: 'flux-pro', input: { prompt: '2' } },
+        { compatibilityCheck: true },
+      );
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+
+      jest.setSystemTime(t0 + PREFETCHED_MODEL_CACHE_TTL_MS + 1);
+      await client.predictions.create(
+        { model: 'flux-pro', input: { prompt: '3' } },
+        { compatibilityCheck: true },
+      );
+      expect(global.fetch).toHaveBeenCalledTimes(5);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
@@ -582,8 +973,13 @@ describe('PredictionsAPI', () => {
       input: { prompt: 'a cat' },
     });
 
-    const callArgs = (global.fetch as jest.Mock).mock.calls[0];
-    const body = JSON.parse(callArgs[1].body);
+    const predictCall = (global.fetch as jest.Mock).mock.calls.find(
+      (c) =>
+        c[1]?.body != null &&
+        String(c[0]).includes(`${API_BASE_URL}/predict`) &&
+        !String(c[0]).includes('/predictions'),
+    );
+    const body = JSON.parse((predictCall as [string, RequestInit])[1].body as string);
     expect(body.await).toBe(false);
     expect(result.status).toBe(PredictionStatus.PENDING);
   });
@@ -598,6 +994,18 @@ describe('PredictionsAPI', () => {
       expect.objectContaining({ method: 'GET' }),
     );
     expect(result.id).toBe('pred_get');
+  });
+
+  test('.get() uses urls.get when provided (API protocol)', async () => {
+    mockFetch(makePredictionResponse({ id: 'pred_get' }));
+    const canonical = 'https://api.skytells.ai/v1/predictions/pred_get';
+
+    await client.predictions.get('pred_get', { get: canonical });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      canonical,
+      expect.objectContaining({ method: 'GET' }),
+    );
   });
 
   test('.list() sends GET to /predictions', async () => {
@@ -728,10 +1136,7 @@ describe('Error handling', () => {
   });
 
   test('simple error response is thrown as SkytellsError', async () => {
-    mockFetch(
-      { status: false, response: 'Unauthorized' },
-      { ok: false, status: 401 },
-    );
+    mockFetch({ status: false, response: 'Unauthorized' }, { ok: false, status: 401 });
 
     try {
       await client.models.list();
@@ -812,31 +1217,33 @@ describe('Retry logic', () => {
     const client = Skytells('sk-test', { retry: { retries: 2, retryDelay: 10 } });
 
     // 1st: 500, 2nd: 500, 3rd: 200
+    const errBody = JSON.stringify({
+      status: false,
+      error: { http_status: 500, message: 'Server error', details: '', error_id: 'INTERNAL_ERROR' },
+    });
+    const okBody = JSON.stringify([{ name: 'flux-pro' }]);
     const mock = global.fetch as jest.Mock;
     mock
       .mockResolvedValueOnce({
         ok: false,
         status: 500,
         headers: { get: jest.fn().mockReturnValue('application/json') },
-        json: jest.fn().mockResolvedValue({
-          status: false,
-          error: { http_status: 500, message: 'Server error', details: '', error_id: 'INTERNAL_ERROR' },
-        }),
+        json: jest.fn().mockResolvedValue(JSON.parse(errBody)),
+        text: jest.fn().mockResolvedValue(errBody),
       })
       .mockResolvedValueOnce({
         ok: false,
         status: 500,
         headers: { get: jest.fn().mockReturnValue('application/json') },
-        json: jest.fn().mockResolvedValue({
-          status: false,
-          error: { http_status: 500, message: 'Server error', details: '', error_id: 'INTERNAL_ERROR' },
-        }),
+        json: jest.fn().mockResolvedValue(JSON.parse(errBody)),
+        text: jest.fn().mockResolvedValue(errBody),
       })
       .mockResolvedValueOnce({
         ok: true,
         status: 200,
         headers: { get: jest.fn().mockReturnValue('application/json') },
-        json: jest.fn().mockResolvedValue([{ name: 'flux-pro' }]),
+        json: jest.fn().mockResolvedValue(JSON.parse(okBody)),
+        text: jest.fn().mockResolvedValue(okBody),
       });
 
     const result = await client.models.list();
@@ -850,7 +1257,12 @@ describe('Retry logic', () => {
     mockFetch(
       {
         status: false,
-        error: { http_status: 422, message: 'Bad input', details: '', error_id: 'VALIDATION_ERROR' },
+        error: {
+          http_status: 422,
+          message: 'Bad input',
+          details: '',
+          error_id: 'VALIDATION_ERROR',
+        },
       },
       { ok: false, status: 422 },
     );
@@ -885,6 +1297,7 @@ describe('Client options', () => {
       status: 200,
       headers: { get: jest.fn().mockReturnValue('application/json') },
       json: jest.fn().mockResolvedValue([]),
+      text: jest.fn().mockResolvedValue('[]'),
     });
 
     const client = Skytells('sk-test', { fetch: customFetch as any });
@@ -948,4 +1361,35 @@ describe('Deprecated methods', () => {
     const result = await client.getPrediction('pred_dep');
     expect(result.id).toBe('pred_dep');
   });
-}); 
+});
+
+describe('ClientOptions.runtime', () => {
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  test('edge uses default timeout 25s and smaller prefetch cap', () => {
+    const c = Skytells('sk', { runtime: 'edge' });
+    expect(c.runtime).toBe('edge');
+    expect(c.config.requestTimeoutMs).toBe(EDGE_DEFAULT_REQUEST_TIMEOUT_MS);
+    expect(c.config.prefetchMaxSlugs).toBe(EDGE_PREFETCH_MAX_SLUGS);
+  });
+
+  test('default runtime uses 60s timeout and full prefetch cap', () => {
+    const c = Skytells('sk');
+    expect(c.runtime).toBe('default');
+    expect(c.config.requestTimeoutMs).toBe(HTTP_DEFAULT_REQUEST_TIMEOUT_MS);
+    expect(c.config.prefetchMaxSlugs).toBe(PREFETCHED_MODEL_CACHE_MAX_SLUGS);
+  });
+
+  test('explicit timeout overrides edge default', () => {
+    const c = Skytells('sk', { runtime: 'edge', timeout: 9999 });
+    expect(c.config.requestTimeoutMs).toBe(9999);
+  });
+});
