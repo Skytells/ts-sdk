@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-03-21
+
+Patch release adding server-side await control to `predictions.create()`.
+
+### Added
+
+- **`PredictionRequest.await`** — `predictions.create()` now honours the `await` field from the request payload. When `true`, the server blocks and returns the final output in a single response (skipping the need to poll). Defaults to `false`. Not supported by video models — the server ignores it and returns `pending` regardless.
+- **`PredictionSdkOptions.autoAwait`** — pass `{ compatibilityCheck: true, autoAwait: true }` as the second argument to `predictions.create()` to let the SDK automatically set `await: true` when the model type is `image`. Requires `compatibilityCheck: true` (reuses the same cached `GET /model/{slug}` fetch). `payload.await` always takes explicit priority over `autoAwait`.
+
+### Fixed
+
+- `predictions.create()` was unconditionally overriding `payload.await` with `false`, silently discarding any `await: true` set by the caller.
+
+---
+
 ## [1.0.4] - 2026-03-21
 
 In this release, we're introducing new APIs — Chat, Embeddings, Responses, Safety, Webhooks, and the Orchestrator sub-client for smart workflow automation — alongside a complete documentation suite, HTTP reliability hardening, and full TypeScript type coverage for all new surfaces.

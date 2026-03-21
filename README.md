@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
 [![Docs](https://img.shields.io/badge/docs-skytells.ai-blueviolet?style=flat-square)](https://docs.skytells.ai/sdks/ts/)
-[![Skytells Learn | Docs](https://img.shields.io/badge/docs-skytells-learn-blueviolet?style=flat-square)](https://learn.skytells.ai/sdks/ts/)
+[![Skytells Learn | Docs](https://img.shields.io/badge/skytells-learn-blue?style=flat-square)](https://learn.skytells.ai/sdks/ts/)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen?style=flat-square)](docs/Architecture.md)
 
 The official JavaScript/TypeScript SDK for interacting with the [Skytells](https://skytells.ai) API. Edge-compatible with Cloudflare Workers, Vercel Edge Functions, Netlify Edge Functions, and more.
@@ -126,6 +126,27 @@ console.log(response.id, response.status); // "pred_..." "pending"
 // Poll until complete
 const result = await skytells.wait(response);
 console.log(result.output);
+```
+
+### Server-side Await
+
+For image models, pass `await: true` to have the server block and return the final output in one request — no polling required:
+
+```typescript
+// Explicit server-side wait (image models only; video models ignore this)
+const response = await skytells.predictions.create({
+  model: 'flux-pro',
+  input: { prompt: 'A cat' },
+  await: true,
+});
+console.log(response.output); // already populated
+
+// Or let the SDK detect the model type automatically:
+const response = await skytells.predictions.create(
+  { model: 'flux-pro', input: { prompt: 'A cat' } },
+  { compatibilityCheck: true, autoAwait: true }, // sets await:true only for image models
+);
+console.log(response.output);
 
 // Or with a timeout and progress (first GET is immediate; then every interval)
 const result = await skytells.wait(response, {
@@ -318,6 +339,8 @@ import type {
 ```
 
 Inference guard: pass **`{ compatibilityCheck: true }`** as the **second** argument to **`predict`** / **`predictions.create`**, **fourth** to **`run`** (use `undefined` for `onProgress` if unused), or **second** to **`queue`** — never inside the JSON body.
+
+Auto server-side await for image models: also pass **`autoAwait: true`** alongside `compatibilityCheck: true` in `predictions.create()`.
 
 ## Safety
 

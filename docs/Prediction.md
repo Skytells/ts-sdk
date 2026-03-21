@@ -124,7 +124,8 @@ interface PredictionRequest {
   input: Record<string, any>;   // Required: model-specific inputs
 
   // Optional
-  await?: boolean;               // Block until completion (default: false)
+  await?: boolean;               // Server-side wait: block until completion (default: false)
+                                 // Ignored by the server for video models.
   stream?: boolean;              // Enable streaming output
   webhook?: Webhook | {
     url: string;
@@ -132,6 +133,34 @@ interface PredictionRequest {
   };
 }
 ```
+
+### SDK options for `predictions.create()`
+
+```ts
+interface PredictionSdkOptions {
+  compatibilityCheck?: boolean; // Validate model is not chat-only before POSTing
+  autoAwait?: boolean;          // Auto-set await:true when model.type === 'image'
+                                // Requires compatibilityCheck: true
+}
+```
+
+**`autoAwait`** automatically enables server-side blocking for image models. Requires `compatibilityCheck: true` to look up the model type (reuses the cached fetch).
+
+```ts
+// SDK detects model type and sets await:true automatically for image models
+const prediction = await client.predictions.create(
+  { model: 'flux-pro', input: { prompt: 'A neon city at night' } },
+  { compatibilityCheck: true, autoAwait: true },
+);
+
+// For image models → output is already populated, no polling needed
+console.log(prediction.output);
+
+// For video/audio models → server ignores await, status is still 'pending'
+const result = await client.wait(prediction);
+```
+
+> `payload.await` always takes explicit priority over `autoAwait`. If you set `await: false` on the payload, `autoAwait` is ignored.
 
 ---
 

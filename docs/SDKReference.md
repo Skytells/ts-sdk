@@ -172,7 +172,7 @@ Access via `client.predictions` or `client.prediction`.
 create(payload: PredictionRequest, sdk?: PredictionSdkOptions): Promise<PredictionResponse>
 ```
 
-Submit a background prediction (`await: false`).
+Submit a prediction. Honours `payload.await` — when `true`, the server blocks and returns the completed output in a single response. Pass `sdk.autoAwait: true` (with `compatibilityCheck: true`) to have the SDK set `await: true` automatically for image models.
 
 #### `predictions.get(id, urls?)`
 
@@ -250,9 +250,32 @@ interface PredictionsListOptions {
 
 ```ts
 interface PredictionSdkOptions {
+  /**
+   * Prefetch model metadata to guard against passing chat-only or incompatible
+   * models to predictions.create(). Result is cached per-client
+   * (10 min TTL, 64 slugs max; 16 in edge mode).
+   */
   compatibilityCheck?: boolean;
-  // When true, prefetches model metadata to guard against chat-only models.
-  // Cached per-client (10min TTL, 64 slugs max / 16 in edge mode).
+
+  /**
+   * Automatically set `await: true` on the request when the model type is
+   * `image`, so the server returns the finished output in a single response
+   * without requiring polling.
+   *
+   * **Requires `compatibilityCheck: true`** — the model type is read from the
+   * same prefetch call used for the compatibility guard.
+   *
+   * `payload.await` always takes explicit priority: if it is set to `true` or
+   * `false`, `autoAwait` is ignored.
+   *
+   * Silently falls back to `false` when the model metadata fetch fails.
+   */
+  autoAwait?: boolean;
+
+  webhook?: Webhook | { url: string; events: ReadonlyArray<string> };
+  interval?: number;    // Poll interval ms for client.run() background mode
+  maxWait?: number;     // Max wait ms for client.run() background mode
+  signal?: AbortSignal; // Abort signal for client.run() background mode
 }
 ```
 

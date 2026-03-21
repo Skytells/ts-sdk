@@ -41,7 +41,7 @@ import type {
   SkytellsRuntime,
   RetryOptions,
 } from './types/index.js';
-import { PredictionStatus } from './types/index.js';
+import { PredictionStatus, ModelType } from './types/index.js';
 import type { WebhookListener } from './webhooks.js';
 import { Webhook, createWebhookListener, type WebhookListenerOptions } from './webhooks.js';
 import { SkytellsError } from './types/shared.types.js';
@@ -356,12 +356,15 @@ export class PredictionsAPI {
   private onBeforePredict?: (
     payload: PredictionRequest,
     sdk?: PredictionSdkOptions,
-  ) => Promise<void>;
+  ) => Promise<{ shouldAutoAwait: boolean }>;
 
   /** @internal */
   constructor(
     http: HTTP,
-    onBeforePredict?: (payload: PredictionRequest, sdk?: PredictionSdkOptions) => Promise<void>,
+    onBeforePredict?: (
+      payload: PredictionRequest,
+      sdk?: PredictionSdkOptions,
+    ) => Promise<{ shouldAutoAwait: boolean }>,
   ) {
     this.http = http;
     this.onBeforePredict = onBeforePredict;
@@ -378,34 +381,47 @@ export class PredictionsAPI {
    * @param payload.input - Key-value input parameters for the model.
    * @param payload.webhook - Optional webhook to receive events.
    * @param payload.stream - Enable streaming (default: `false`).
+   * @param payload.await - When `true`, the server blocks until the prediction completes and returns
+   *   the final result in one response. Ignored by the server for video predictions (returns
+   *   immediately regardless). Defaults to `false`.
    * @param sdk - SDK-only options (not sent in JSON). When `sdk.compatibilityCheck === true`, runs inference compatibility guard before POST.
-   * @returns The initial prediction response with `status: 'pending'` or `'starting'`.
+   * @returns The prediction response — with final `output` when `payload.await` is `true`,
+   *   or `status: 'pending'` / `'starting'` when `false`.
    * @throws {SkytellsError} On API errors (invalid input, model not found, insufficient credits).
    *
    * @example
    * ```ts
+   * // Fire and poll manually
    * const prediction = await client.predictions.create({
    *   model: "flux-pro",
    *   input: { prompt: "An astronaut riding a unicorn" },
    * });
-   * console.log(prediction.id, prediction.status); // "pending"
-   *
-   * // Wait for it to finish
    * const result = await client.wait(prediction);
    * console.log(result.output);
+   *
+   * // Server-side wait — returns final output immediately (not supported for video models)
+   * const prediction = await client.predictions.create({
+   *   model: "flux-pro",
+   *   input: { prompt: "An astronaut riding a unicorn" },
+   *   await: true,
+   * });
+   * console.log(prediction.output);
    * ```
    */
   async create(
     payload: PredictionRequest,
     sdk?: PredictionSdkOptions,
   ): Promise<PredictionResponse> {
+    let shouldAutoAwait = false;
     if (this.onBeforePredict) {
-      await this.onBeforePredict(payload, sdk);
+      ({ shouldAutoAwait } = await this.onBeforePredict(payload, sdk));
     }
+    // payload.await takes explicit priority; autoAwait only applies when await is not set by the caller
+    const awaitValue = payload.await !== undefined ? payload.await : shouldAutoAwait || false;
     return this.http.request<PredictionResponse>(
       'POST',
       ENDPOINTS.PREDICT,
-      predictionBodyForHttp(payload, { await: false }),
+      predictionBodyForHttp(payload, { await: awaitValue }),
     );
   }
 
@@ -620,7 +636,7 @@ export class SkytellsClient {
   public get predictions(): PredictionsAPI {
     if (!this._predictions) {
       this._predictions = new PredictionsAPI(this.http, (p, sdk) =>
-        this._maybeCompatibilityGuard(p.model, sdk?.compatibilityCheck),
+        this._resolveBeforePredict(p, sdk),
       );
     }
     return this._predictions;
@@ -976,6 +992,27 @@ export class SkytellsClient {
       cache.delete(oldest);
     }
     return model;
+  }
+
+  /**
+   * @internal Runs compatibility guard and resolves autoAwait from model type.
+   * Returns `{ shouldAutoAwait }` for use by `PredictionsAPI.create`.
+   */
+  private async _resolveBeforePredict(
+    payload: PredictionRequest,
+    sdk?: PredictionSdkOptions,
+  ): Promise<{ shouldAutoAwait: boolean }> {
+    await this._maybeCompatibilityGuard(payload.model, sdk?.compatibilityCheck);
+    if (sdk?.autoAwait !== true || sdk?.compatibilityCheck !== true) {
+      return { shouldAutoAwait: false };
+    }
+    try {
+      const modelData = await this._getModelForCompatibilityCheck(payload.model);
+      const isImage = modelData.type === ModelType.IMAGE;
+      return { shouldAutoAwait: isImage };
+    } catch {
+      return { shouldAutoAwait: false };
+    }
   }
 
   /**

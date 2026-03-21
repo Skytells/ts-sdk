@@ -57,6 +57,28 @@ export interface PredictionSdkOptions {
    * (smaller when `runtime: "edge"`).
    */
   compatibilityCheck?: boolean;
+  /**
+   * When `true`, automatically sets `await: true` on the request if the model type is `image`
+   * (or `image_megapixel`), causing the server to block and return the final output in one response.
+   *
+   * **Requires `compatibilityCheck: true`** — the model type is read from the same cached `GET /model/{slug}`
+   * call made by the compatibility guard. Silently falls back to `await: false` if the model fetch fails
+   * or the type is not an image type (e.g. video models ignore server-side await).
+   *
+   * `payload.await` always takes priority: if you explicitly set `await: true` or `await: false` on the
+   * request, `autoAwait` is ignored.
+   *
+   * @example
+   * ```ts
+   * const prediction = await client.predictions.create(
+   *   { model: 'flux-pro', input: { prompt: '...' } },
+   *   { compatibilityCheck: true, autoAwait: true },
+   * );
+   * // For image models: prediction.output is already populated
+   * // For video/audio models: prediction.status is 'pending', poll with client.wait()
+   * ```
+   */
+  autoAwait?: boolean;
 }
 
 /**
